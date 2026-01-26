@@ -1,5 +1,5 @@
 flask
-python-telegram-ext
+python-telegram-bot
 python-binance
 pandas
 
