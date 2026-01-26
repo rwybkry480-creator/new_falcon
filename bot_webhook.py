@@ -1,9 +1,10 @@
 # -----------------------------------------------------------------------------
-# bot_webhook.py - v7.1 (Diagnostic Version)
+# bot_webhook.py - v7.2 (Final, with asyncio fix and /start command)
 # -----------------------------------------------------------------------------
 
 import os
 import logging
+import asyncio
 from flask import Flask, request
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -23,10 +24,8 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 BINANCE_API_KEY = os.environ.get("BINANCE_API_KEY")
 BINANCE_SECRET_KEY = os.environ.get("BINANCE_SECRET_KEY")
 
-# Check if token is loaded
 if not TELEGRAM_TOKEN:
     logger.error("FATAL: TELEGRAM_TOKEN environment variable not set.")
-    # In a real app, you might want to exit or handle this gracefully
 else:
     logger.info("TELEGRAM_TOKEN loaded successfully.")
 
@@ -81,7 +80,8 @@ def analyze_symbol(client, symbol):
             return "SELL", current_price
 
     except Exception as e:
-        logger.error(f"[Binance] Error analyzing {symbol}: {e}")
+        if "Invalid symbol" not in str(e):
+             logger.warning(f"[Binance] Could not analyze {symbol}: {e}")
 
     return "HOLD", None
 
@@ -89,26 +89,36 @@ def scan_all_symbols_under_100():
     results = []
     try:
         tickers = client.get_ticker()
-        for t in tickers:
-            symbol = t["symbol"]
-            if symbol.endswith("USDT"):
-                price = float(t["lastPrice"])
-                if 0 < price < 100:
-                    decision, current_price = analyze_symbol(client, symbol)
-                    if decision != "HOLD":
-                        results.append((symbol, decision, current_price))
+        usdt_tickers = [t for t in tickers if t['symbol'].endswith("USDT") and 0 < float(t['lastPrice']) < 100]
+        
+        for t in usdt_tickers:
+            decision, current_price = analyze_symbol(client, t['symbol'])
+            if decision != "HOLD":
+                results.append((t['symbol'], decision, current_price))
     except Exception as e:
         logger.error(f"Error fetching tickers from Binance: {e}")
     return results
 
 # --- Telegram Command Handlers ---
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    message = (f"👋 أهلاً بك يا {user.mention_html()}!\n\n"
+               f"أنا <b>بوت فالكون الماسح (Falcon Scanner)</b>.\n"
+               f"استخدم الأمر /scan لبدء فحص السوق بحثاً عن فرص حسب الاستراتيجية المدمجة.\n\n"
+               f"<i>صنع بواسطة المطور عبدالرحمن محمد</i>")
+    await update.message.reply_html(message, disable_web_page_preview=True)
+
 async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("⏳ Scanning the market, this might take a few minutes...")
-    results = scan_all_symbols_under_100()
+    await update.message.reply_text("⏳ جاري فحص السوق، قد يستغرق هذا بضع دقائق...")
+    
+    # --- THE CRITICAL FIX ---
+    # Run the long, blocking function in a separate thread
+    results = await asyncio.to_thread(scan_all_symbols_under_100)
+    
     if not results:
-        message = "✅ Market scan complete. No clear opportunities found at the moment."
+        message = "✅ تم فحص السوق. لا توجد فرص واضحة حاليًا."
     else:
-        message = "📊 Scan results for coins under 100 USDT:\n\n"
+        message = "📊 نتائج الفحص للعملات تحت 100 USDT:\n\n"
         for sym, decision, price in results:
             emoji = "📈" if decision == "BUY" else "📉"
             message += f"{emoji} {sym}: {decision} at {price:.4f}\n"
@@ -116,24 +126,17 @@ async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- Webhook Setup ---
 application = Application.builder().token(TELEGRAM_TOKEN).build()
+# Add both command handlers
+application.add_handler(CommandHandler("start", start))
 application.add_handler(CommandHandler("scan", scan))
 
 @app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
 def webhook():
-    # --- DIAGNOSTIC LOGS ---
-    logger.info("✅ Webhook route was hit! Receiving a request...")
-    
-    request_data = request.get_data(as_text=True)
-    logger.info(f"--- REQUEST DATA ---\n{request_data}\n--------------------")
-    # --- END DIAGNOSTIC LOGS ---
-    
     try:
         update = Update.de_json(request.get_json(force=True), application.bot)
         application.update_queue.put_nowait(update)
-        logger.info("✅ Update successfully put into the queue.")
     except Exception as e:
-        logger.error(f"❌ ERROR processing update: {e}")
-        
+        logger.error(f"Error processing update in webhook: {e}")
     return "ok", 200
 
 @app.route("/")
@@ -142,7 +145,7 @@ def index():
 
 # --- Entry Point ---
 if __name__ == "__main__":
-    logger.info("--- Starting Webhook Application ---")
+    logger.info("--- Starting Falcon Scanner Webhook Application ---")
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
 
