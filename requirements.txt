@@ -1,10 +1,4 @@
-<<<<<<< HEAD
 Flask
 python-telegram-bot[job-queue]
 requests
 
-=======
-requests
-numpy
-pyTelegramBotAPI
->>>>>>> 30dbfabedb9e7a06cfe7ab977168c4214b0f002d
