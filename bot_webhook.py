@@ -1,5 +1,5 @@
 # -----------------------------------------------------------------------------
-# bot_webhook.py - v9.1 (Custom Signal Formatting)
+# bot_webhook.py - v9.2 (with Incoming Request Logging)
 # -----------------------------------------------------------------------------
 
 import os
@@ -68,7 +68,6 @@ def analyze_symbol(symbol, data):
 
     is_uptrend = last_close > ema7 and last_close > ema25
 
-    # --- CUSTOM SIGNAL FORMATTING STARTS HERE ---
     if is_uptrend and near_resistance:
         signal = (
             f"📈 إشارة شراء قوية (Long)\n"
@@ -88,7 +87,6 @@ def analyze_symbol(symbol, data):
             f"🛡️ ارتداد من دعم قوي"
         )
         return signal
-    # --- CUSTOM SIGNAL FORMATTING ENDS HERE ---
 
     return None
 
@@ -116,7 +114,7 @@ def run_full_scan():
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     message = (f"👋 أهلاً بك يا {user.mention_html()}!\n\n"
-               f"أنا <b>بوت فالكون الماسح (v9.1)</b>.\n"
+               f"أنا <b>بوت فالكون الماسح (v9.2)</b>.\n"
                f"استخدم الأمر /scan لبدء فحص السوق بحثاً عن فرص شراء.\n\n"
                f"<i>صنع بواسطة المطور عبدالرحمن محمد</i>")
     await update.message.reply_html(message, disable_web_page_preview=True)
@@ -130,7 +128,6 @@ async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
         message = "✅ تم فحص السوق. لا توجد فرص واضحة حاليًا."
         await update.message.reply_text(message)
     else:
-        # Send each signal as a separate message for clarity
         await update.message.reply_text(f"📊 تم العثور على {len(signals)} إشارة:")
         for signal in signals:
             await update.message.reply_text(signal)
@@ -142,6 +139,9 @@ application.add_handler(CommandHandler("scan", scan))
 
 @app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
 def webhook():
+    # Log the incoming request for debugging purposes
+    logger.info(f"Webhook received a request: {request.json}")
+    
     try:
         update = Update.de_json(request.get_json(force=True), application.bot)
         application.update_queue.put_nowait(update)
@@ -151,7 +151,7 @@ def webhook():
 
 @app.route("/")
 def index():
-    return "Falcon Hybrid Bot (v9.1) is Running!", 200
+    return "Falcon Hybrid Bot (v9.2) is Running!", 200
 
 # --- Entry Point ---
 if __name__ == "__main__":
