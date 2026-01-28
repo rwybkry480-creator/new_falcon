@@ -1,5 +1,5 @@
 # -----------------------------------------------------------------------------
-# bot_final_working.py - v11.0 (Multi-Timeframe Analysis 1H + 4H)
+# bot_final_working.py - v12.0 (Smart Scenario Analyzer)
 # -----------------------------------------------------------------------------
 
 import os
@@ -20,14 +20,17 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 @app.route('/')
 def health_check():
-    return "Falcon Scanner Bot (v11.0 - MTFA 1H/4H) is Running!", 200
+    return "Falcon Scanner Bot (v12.0 - Scenario Analyzer) is Running!", 200
 def run_server():
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
 
 # --- Binance API & Analysis Functions ---
-SUPPORT_LEVELS = [float(x) for x in os.getenv("SUPPORT_LEVELS", "0.1530,0.1450,0.1380").split(",")]
-RESISTANCE_LEVELS = [float(x) for x in os.getenv("RESISTANCE_LEVELS", "0.1594,0.1639,0.1700").split(",")]
+# يمكنك تعديل هذه المستويات من متغيرات البيئة في Render
+SUPPORT_LEVELS_STR = os.getenv("SUPPORT_LEVELS", "0.1530,0.1450,0.1380")
+RESISTANCE_LEVELS_STR = os.getenv("RESISTANCE_LEVELS", "0.1594,0.1639,0.1700")
+SUPPORT_LEVELS = [float(x) for x in SUPPORT_LEVELS_STR.split(",")]
+RESISTANCE_LEVELS = [float(x) for x in RESISTANCE_LEVELS_STR.split(",")]
 KLINES_LIMIT = 50
 
 def get_all_usdt_symbols():
@@ -53,105 +56,113 @@ def get_binance_klines(symbol, interval="1h", limit=KLINES_LIMIT):
         logger.warning(f"Could not fetch klines for {symbol}: {e}")
         return None
 
-def check_uptrend(data):
+def analyze_symbol(symbol, data):
     """
-    دالة مساعدة للتحقق من وجود اتجاه صاعد (المنطق الأصلي v10.0).
+    يحلل السوق بناءً على سيناريوهات الاختراق والارتداد المحددة.
     """
-    if not data or len(data) < 25:
-        return False, 0, 0, 0
+    if not data or len(data) < 26: # نحتاج شمعتين على الأقل للتحقق من الاختراق
+        return None
 
     df = pd.DataFrame(data, columns=['timestamp','open','high','low','close','volume','time','quote_av','trades','tb_base_av','tb_quote_av','ignore'])
-    df['close'] = pd.to_numeric(df['close'])
+    df[['open', 'high', 'low', 'close']] = df[['open', 'high', 'low', 'close']].apply(pd.to_numeric)
+
+    # حساب المتوسطات
+    df['EMA7'] = df['close'].ewm(span=7, adjust=False).mean()
+    df['EMA25'] = df['close'].ewm(span=25, adjust=False).mean()
+
+    # استخراج بيانات آخر شمعتين
+    prev_candle = df.iloc[-2]
+    last_candle = df.iloc[-1]
+
+    # الشرط الأساسي: الاتجاه العام يجب أن يكون صاعدًا (الشرط الصارم)
+    is_strong_uptrend = last_candle['close'] > last_candle['EMA7'] > last_candle['EMA25']
     
-    ema7 = df['close'].ewm(span=7, adjust=False).mean().iloc[-1]
-    ema25 = df['close'].ewm(span=25, adjust=False).mean().iloc[-1]
-    last_close = df['close'].iloc[-1]
+    if not is_strong_uptrend:
+        return None # إذا لم يكن الاتجاه صاعدًا، لا تكمل التحليل
 
-    # المنطق الأصلي الفضفاض
-    is_uptrend = last_close > ema7 and last_close > ema25
-    return is_uptrend, last_close, ema7, ema25
+    # --- الآن، نبحث عن السيناريوهات المحددة ---
 
-def analyze_symbol(symbol):
-    """
-    التحليل باستخدام فلتر الأطر الزمنية المتعددة (1H و 4H).
-    """
-    # 1. جلب بيانات كلا الإطارين الزمنيين
-    klines_1h = get_binance_klines(symbol, interval="1h")
-    klines_4h = get_binance_klines(symbol, interval="4h")
+    # 1. البحث عن سيناريو الاختراق (Breakout)
+    for res_level in RESISTANCE_LEVELS:
+        # هل الشمعة الحالية اخترقت المقاومة، بينما الشمعة السابقة كانت تحتها؟
+        if last_candle['close'] > res_level and prev_candle['close'] < res_level:
+            logger.info(f"Breakout scenario detected for {symbol} at resistance {res_level}")
+            stop_loss = prev_candle['low'] # وقف الخسارة تحت قاع الشمعة السابقة
+            return (f"🔥 **سيناريو اختراق (Breakout)** 🔥\n\n"
+                    f"• **العملة:** `{symbol}`\n"
+                    f"• **السعر الحالي:** `{last_candle['close']:.5f}`\n"
+                    f"• **الحدث:** تم اختراق مستوى المقاومة `{res_level}` بنجاح.\n\n"
+                    f"• **خطة مقترحة:**\n"
+                    f"  - **الدخول:** حول السعر الحالي.\n"
+                    f"  - **وقف الخسارة المقترح:** أسفل `{stop_loss:.5f}`.")
 
-    # 2. التحقق من وجود اتجاه صاعد على كلا الإطارين
-    uptrend_1h, last_close_1h, ema7_1h, ema25_1h = check_uptrend(klines_1h)
-    uptrend_4h, _, _, _ = check_uptrend(klines_4h) # لا نحتاج تفاصيل الـ 4 ساعات، فقط التأكيد
+    # 2. البحث عن سيناريو الارتداد (Pullback/Bounce)
+    # هل لامس قاع الشمعة منطقة الدعم (بين متوسط 7 و 25) ثم ارتد؟
+    support_zone_top = max(last_candle['EMA7'], last_candle['EMA25'])
+    support_zone_bottom = min(last_candle['EMA7'], last_candle['EMA25'])
+    
+    if support_zone_bottom <= last_candle['low'] <= support_zone_top and last_candle['close'] > last_candle['open']:
+        logger.info(f"Bounce scenario detected for {symbol} from EMA support zone.")
+        stop_loss = df['low'].iloc[-5:].min() # وقف الخسارة تحت أدنى قاع لآخر 5 شمعات لمزيد من الأمان
+        return (f"🛡️ **سيناريو ارتداد (Bounce)** 🛡️\n\n"
+                f"• **العملة:** `{symbol}`\n"
+                f"• **السعر الحالي:** `{last_candle['close']:.5f}`\n"
+                f"• **الحدث:** ارتد السعر من منطقة الدعم للمتوسطات المتحركة.\n\n"
+                f"• **خطة مقترحة:**\n"
+                f"  - **الدخول:** حول السعر الحالي (منطقة آمنة).\n"
+                f"  - **وقف الخسارة المقترح:** أسفل `{stop_loss:.5f}`.")
 
-    # 3. الشرط الأساسي الجديد: يجب أن يكون الاتجاه صاعدًا على كلا الفريمين
-    if uptrend_1h and uptrend_4h:
-        logger.info(f"Confirmation on {symbol}: 1H uptrend and 4H uptrend are both true.")
-        
-        # 4. الآن فقط، نتحقق من شروط الدعم والمقاومة على فريم الساعة
-        near_support = any(abs(last_close_1h - s) / s < 0.01 for s in SUPPORT_LEVELS)
-        near_resistance = any(abs(last_close_1h - r) / r < 0.01 for r in RESISTANCE_LEVELS)
-
-        if near_resistance:
-            return (f"📈 إشارة شراء قوية (Long - MTFA)\n"
-                    f"العملة: {symbol}\n"
-                    f"السعر: {last_close_1h:.5f}\n"
-                    f"تأكيد 1H ✅ | تأكيد 4H ✅\n"
-                    f"🚀 قريب من اختراق مقاومة مهمة")
-        if near_support:
-            return (f"📈 إشارة شراء محتملة (ارتداد - MTFA)\n"
-                    f"العملة: {symbol}\n"
-                    f"السعر: {last_close_1h:.5f}\n"
-                    f"تأكيد 1H ✅ | تأكيد 4H ✅\n"
-                    f"🛡️ ارتداد من دعم قوي")
     return None
 
 # --- بقية الكود (run_full_scan, start, scan, etc.) تبقى كما هي بدون أي تغيير ---
 def run_full_scan():
-    logger.info("--- Starting a new market scan (v11.0 - MTFA) ---")
+    logger.info("--- Starting a new market scan (v12.0) ---")
     all_symbols = get_all_usdt_symbols()
     signals = []
     if not all_symbols:
         logger.warning("Could not retrieve symbols to scan.")
         return []
     for symbol in all_symbols:
-        signal = analyze_symbol(symbol)
+        klines = get_binance_klines(symbol)
+        signal = analyze_symbol(symbol, klines)
         if signal:
             signals.append(signal)
-        asyncio.run(asyncio.sleep(0.2)) # زدنا الفاصل قليلاً لأننا نطلب بيانات مضاعفة
+        asyncio.run(asyncio.sleep(0.1))
     logger.info(f"--- Scan complete. Found {len(signals)} signals. ---")
     return signals
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     message = (f"👋 أهلاً بك يا {user.mention_html()}!\n\n"
-               f"أنا <b>بوت فالكون الماسح (v11.0 - MTFA)</b>.\n"
-               f"أبحث عن فرص يتوافق فيها اتجاه الساعة مع الأربع ساعات.\n\n"
+               f"أنا <b>بوت فالكون المحلل (v12.0)</b>.\n"
+               f"أبحث عن سيناريوهات الاختراق والارتداد بناءً على خطتك.\n\n"
                f"<i>صنع بواسطة المطور عبدالرحمن محمد</i>")
     await update.message.reply_html(message, disable_web_page_preview=True)
 
 async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("⏳ جاري فحص السوق (بفلتر 1H/4H)، قد يستغرق هذا بضع دقائق...")
+    await update.message.reply_text("⏳ جاري تحليل السوق بحثاً عن سيناريوهات محددة...")
     signals = run_full_scan()
     if not signals:
-        await update.message.reply_text("✅ تم فحص السوق. لا توجد فرص يتوافق فيها الإطاران الزمنيان حاليًا.")
+        await update.message.reply_text("✅ تم فحص السوق. لا توجد سيناريوهات اختراق أو ارتداد واضحة حاليًا.")
     else:
-        await update.message.reply_text(f"📊 تم العثور على {len(signals)} إشارة عالية الجودة (MTFA):")
+        await update.message.reply_text(f"📊 تم العثور على {len(signals)} سيناريو تداول محتمل:")
         for signal in signals:
-            await update.message.reply_text(signal)
+            # استخدمنا parse_mode='Markdown' لتنسيق النص (عريض ومائل)
+            await update.message.reply_text(signal, parse_mode='Markdown')
 
 def run_bot():
     TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("scan", scan))
-    logger.info("--- [Falcon Scanner v11.0] Bot is ready and running (Polling Mode). ---")
+    logger.info("--- [Falcon Scanner v12.0] Bot is ready and running (Polling Mode). ---")
     application.run_polling()
 
 if __name__ == "__main__":
-    logger.info("--- [Falcon Scanner v11.0] Starting Main Application ---")
+    logger.info("--- [Falcon Scanner v12.0] Starting Main Application ---")
     server_thread = Thread(target=run_server)
     server_thread.daemon = True
     server_thread.start()
-    logger.info("--- [Falcon Scanner v11.0] Web Server has been started. ---")
+    logger.info("--- [Falcon Scanner v12.0] Web Server has been started. ---")
     run_bot()
 
