@@ -2,4 +2,4 @@ Flask
 python-telegram-bot[job-queue]
 requests
 pandas
-
+pandas-ta
