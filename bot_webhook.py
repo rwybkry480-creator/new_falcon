@@ -1,5 +1,5 @@
 # -----------------------------------------------------------------------------
-# smc_bot_v14.4.py - (Falcon KDJ Sniper v14.4: The Pure Cross-Hunter)
+# smc_bot_v16.1.py - (Falcon KDJ Sniper v16.1: The 1-Hour Radar)
 # -----------------------------------------------------------------------------
 
 import os
@@ -26,13 +26,13 @@ client = Client(BINANCE_API_KEY, BINANCE_SECRET_KEY)
 # --- خادم الويب ---
 @app.route('/')
 def health_check():
-    return "Falcon KDJ Sniper Bot Service (v14.4 - Pure Cross) is Running!", 200
+    return "Falcon KDJ Sniper Bot Service (v16.1 - 1-Hour Radar) is Running!", 200
 def run_server():
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
 
-# --- دوال التحليل (النسخة النقية والجديدة) ---
-def get_binance_klines(symbol, interval='15m', limit=30):
+# --- دوال التحليل (المنطق الجديد والأبسط) ---
+def get_binance_klines(symbol, interval='1h', limit=30): # <-- تم التغيير هنا
     try:
         klines = client.get_klines(symbol=symbol, interval=interval, limit=limit)
         return klines
@@ -42,26 +42,21 @@ def get_binance_klines(symbol, interval='15m', limit=30):
 
 def analyze_symbol_kdj(df):
     try:
-        # نحسب KDJ ونضيفه إلى الجدول
         kdj_df = df.ta.kdj()
         df = pd.concat([df, kdj_df], axis=1)
 
-        required_cols = ['J_14_3_3', 'K_14_3_3']
-        if not all(col in df.columns for col in required_cols):
-            return None, None
+        required_cols = ['J_14_3_3', 'K_14_3_3', 'D_14_3_3']
+        if not all(col in df.columns for col in required_cols): return None, None
         df.dropna(inplace=True)
-        if len(df) < 2: return None, None
+        if df.empty: return None, None
 
-        # --- الشرط النقي والوحيد: التقاطع ---
-        # هل J اخترق K للأعلى في هذه الشمعة؟
-        # .ta.cross ترجع 1 عند التقاطع الإيجابي، -1 عند التقاطع السلبي، 0 إذا لم يحدث شيء
-        cross_signal = df.ta.cross(df['J_14_3_3'], df['K_14_3_3'], append=True).iloc[-1]
+        current = df.iloc[-1]
 
-        if cross_signal == 1:
-            return 'BUY', df.iloc[-1]
-        
-        if cross_signal == -1:
-            return 'SELL', df.iloc[-1]
+        if current['J_14_3_3'] > current['K_14_3_3'] and current['J_14_3_3'] > current['D_14_3_3']:
+            return 'BUY', current
+
+        if current['J_14_3_3'] < current['K_14_3_3'] and current['J_14_3_3'] < current['D_14_3_3']:
+            return 'SELL', current
             
     except Exception as e:
         logger.error(f"An unexpected error occurred during analysis: {e}")
@@ -70,10 +65,10 @@ def analyze_symbol_kdj(df):
 # --- بقية الكود (scan_market, start, etc.) تبقى كما هي مع تعديل بسيط في الرسائل ---
 async def scan_market(context: ContextTypes.DEFAULT_TYPE):
     job_name = "Manual Scan" if context.job.name.startswith("scan_") else "Scheduled Scan"
-    logger.info(f"--- Starting {job_name} (Pure Cross) ---")
+    logger.info(f"--- Starting {job_name} (1-Hour Radar) ---")
     chat_id = context.job.data['chat_id']
     if job_name == "Manual Scan":
-        await context.bot.send_message(chat_id=chat_id, text=f"⏳ جاري {job_name} للسوق (فريم 15 دقيقة، استراتيجية التقاطع النقي)...")
+        await context.bot.send_message(chat_id=chat_id, text=f"⏳ جاري {job_name} للسوق (فريم 1 ساعة، رادار الحالة المستمرة)...")
     try:
         all_tickers = client.get_ticker()
         symbols_to_scan = [t['symbol'] for t in all_tickers if t['symbol'].endswith('USDT') and float(t.get('lastPrice', 0)) < 100]
@@ -83,20 +78,22 @@ async def scan_market(context: ContextTypes.DEFAULT_TYPE):
         return
     found_signals = 0
     for symbol in symbols_to_scan:
-        klines = get_binance_klines(symbol)
+        klines = get_binance_klines(symbol) # سيستخدم الآن '1h' كفريم افتراضي
         if not klines: continue
         df = pd.DataFrame(klines, columns=['timestamp','open','high','low','close','volume','close_time','quote_av','trades','tb_base_av','tb_quote_av','ignore'])
         df['close'] = pd.to_numeric(df['close'])
         signal_type, signal_data = analyze_symbol_kdj(df)
         if signal_type:
             found_signals += 1
-            signal_emoji = "📈" if signal_type == 'BUY' else "📉"
-            action_text = "شراء" if signal_type == 'BUY' else "بيع"
-            message = (f"{signal_emoji} *[KDJ 15m - Pure Cross]* إشارة {action_text}!\n\n"
+            signal_emoji = "🟢" if signal_type == 'BUY' else "🔴"
+            action_text = "زخم إيجابي" if signal_type == 'BUY' else "زخم سلبي"
+            message = (f"{signal_emoji} *[KDJ 1h - Radar]* حالة {action_text}!\n\n" # <-- تم التغيير هنا
                        f"• **العملة:** `{symbol}`\n"
                        f"• **السعر:** `{signal_data['close']:.5f}`\n\n"
-                       f"• **السبب:**\n"
-                       f"  - حدث تقاطع بين خطي J و K.")
+                       f"• **الحالة الحالية:**\n"
+                       f"  - J: `{signal_data['J_14_3_3']:.2f}`\n"
+                       f"  - K: `{signal_data['K_14_3_3']:.2f}`\n"
+                       f"  - D: `{signal_data['D_14_3_3']:.2f}`")
             await context.bot.send_message(chat_id=chat_id, text=message, parse_mode='Markdown')
         await asyncio.sleep(0.1)
     logger.info(f"--- {job_name} complete. Found {found_signals} signals. ---")
@@ -108,12 +105,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat_id = update.effective_message.chat_id
     await update.message.reply_html(f"👋 أهلاً بك يا {user.mention_html()}!\n\n"
-                                    f"أنا بوت **Falcon KDJ Sniper (v14.4 - Pure Cross)**.\n\n"
-                                    f"يقوم البوت الآن بالفحص التلقائي **كل 15 دقيقة** باستخدام استراتيجية التقاطع النقي.")
+                                    f"أنا بوت **Falcon KDJ Sniper (v16.1 - 1-Hour Radar)**.\n\n"
+                                    f"يقوم البوت الآن بالفحص التلقائي **كل ساعة** باستخدام رادار الحالة المستمرة.")
     current_jobs = context.job_queue.get_jobs_by_name("scheduled_scan")
     for job in current_jobs:
         job.schedule_removal()
-    context.job_queue.run_repeating(scan_market, interval=900, first=10, data={'chat_id': chat_id}, name="scheduled_scan")
+    # الفحص كل ساعة (3600 ثانية)
+    context.job_queue.run_repeating(scan_market, interval=3600, first=10, data={'chat_id': chat_id}, name="scheduled_scan") # <-- تم التغيير هنا
 
 async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_message.chat_id
@@ -126,15 +124,16 @@ def run_bot():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("scan", scan_command))
     job_data = {'chat_id': TELEGRAM_CHAT_ID}
-    application.job_queue.run_repeating(scan_market, interval=900, first=10, data=job_data, name="scheduled_scan")
-    logger.info("--- [Falcon KDJ Sniper v14.4] Bot is ready and running autonomously. ---")
+    # الفحص كل ساعة (3600 ثانية)
+    application.job_queue.run_repeating(scan_market, interval=3600, first=10, data=job_data, name="scheduled_scan") # <-- تم التغيير هنا
+    logger.info("--- [Falcon KDJ Sniper v16.1] Bot is ready and running autonomously. ---")
     application.run_polling()
 
 if __name__ == "__main__":
-    logger.info("--- [Falcon KDJ Sniper v14.4] Starting Main Application ---")
+    logger.info("--- [Falcon KDJ Sniper v16.1] Starting Main Application ---")
     server_thread = Thread(target=run_server)
     server_thread.daemon = True
     server_thread.start()
-    logger.info("--- [Falcon KDJ Sniper v14.4] Web Server has been started. ---")
+    logger.info("--- [Falcon KDJ Sniper v16.1] Web Server has been started. ---")
     run_bot()
 
